@@ -1,121 +1,207 @@
+// lib/main.dart
+// Flow: First launch → Onboarding → Auth → Home
+//       Returning user → Auth gate → Home
+import 'package:cal_ai/providers/app_providers.dart';
+import 'package:cal_ai/screens/auth_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:sizer/sizer.dart';
+import 'screens/home_screen.dart';
+import 'screens/onboarding_screen.dart';
 
-void main() {
-  runApp(const MyApp());
+const _supabaseUrl     = '';
+const _supabaseAnonKey = '';
+
+const _kOnboardingDone = 'onboarding_complete';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    statusBarColor:                    Colors.transparent,
+    statusBarIconBrightness:           Brightness.light,
+    systemNavigationBarColor:          Color(0xFF000000),
+    systemNavigationBarIconBrightness: Brightness.light,
+  ));
+
+  await Supabase.initialize(
+    url:     _supabaseUrl,
+    anonKey: _supabaseAnonKey,
+    authOptions: const FlutterAuthClientOptions(
+      authFlowType: AuthFlowType.pkce,
+    ),
+  );
+
+  // Read onboarding flag before runApp so there's no flicker
+  final prefs           = await SharedPreferences.getInstance();
+  final onboardingDone  = prefs.getBool(_kOnboardingDone) ?? false;
+
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => AppProvider(),
+      child: CalAIApp(onboardingDone: onboardingDone),
+    ),
+  );
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class CalAIApp extends StatelessWidget {
+  const CalAIApp({super.key, required this.onboardingDone});
+  final bool onboardingDone;
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+    return Sizer(
+      builder: (context, orientation, deviceType) {
+        return MaterialApp(
+          title:                    'Cal AI',
+          debugShowCheckedModeBanner: false,
+          theme:                    _buildTheme(),
+          // Named routes used for post-auth navigation
+          routes: {
+            '/home':        (_) => const HomeScreen(),
+            '/auth':        (_) => const AuthScreen(),
+            '/onboarding':  (_) => const OnboardingScreen(),
+          },
+          home: onboardingDone
+              ? const _AuthGate()       // returning user → check session
+              : const OnboardingScreen(), // first launch → onboarding
+        );
+      },
     );
   }
+
+  ThemeData _buildTheme() => ThemeData(
+    brightness:              Brightness.dark,
+    useMaterial3:            true,
+    scaffoldBackgroundColor: const Color(0xFF000000),
+    colorScheme: const ColorScheme.dark(
+      primary:    Color(0xFFC1FF72),
+      onPrimary:  Color(0xFF000000),
+      surface:    Color(0xFF111111),
+      background: Color(0xFF000000),
+      onSurface:  Colors.white,
+    ),
+    appBarTheme: const AppBarTheme(
+      backgroundColor:        Colors.black,
+      foregroundColor:        Colors.white,
+      elevation:              0,
+      scrolledUnderElevation: 0,
+      titleTextStyle: TextStyle(
+        color: Colors.white, fontSize: 18,
+        fontWeight: FontWeight.w700, letterSpacing: -0.3,
+      ),
+    ),
+    elevatedButtonTheme: ElevatedButtonThemeData(
+      style: ElevatedButton.styleFrom(
+        backgroundColor: const Color(0xFFC1FF72),
+        foregroundColor: Colors.black,
+        elevation:       0,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(100)),
+        minimumSize: const Size(double.infinity, 56),
+      ),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled:    true,
+      fillColor: const Color(0xFF111111),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide:   BorderSide.none,
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: const BorderSide(color: Color(0xFFC1FF72), width: 1.5),
+      ),
+      hintStyle: const TextStyle(color: Color(0xFF555555), fontSize: 15),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+    ),
+  );
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
-
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
-  }
+// ── Auth Gate — only reached after onboarding is done ────────────────────────
+class _AuthGate extends StatelessWidget {
+  const _AuthGate();
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
+    return StreamBuilder<AuthState>(
+      stream: Supabase.instance.client.auth.onAuthStateChange,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const _SplashScreen();
+        }
+
+        final session = snapshot.data?.session;
+
+        if (session == null) {
+          return const AuthScreen();
+        }
+
+        return FutureBuilder<bool>(
+          future: _isProfileComplete(),
+          builder: (context, snap) {
+            if (!snap.hasData) return const _SplashScreen();
+            return snap.data! ? const HomeScreen() : const AuthScreen();
+          },
+        );
+      },
+    );
+  }
+
+  Future<bool> _isProfileComplete() async {
+    try {
+      final uid = Supabase.instance.client.auth.currentUser?.id;
+      if (uid == null) return false;
+      final data = await Supabase.instance.client
+          .from('users')
+          .select('name')
+          .eq('id', uid)
+          .maybeSingle();
+      if (data == null) return false;
+      final name         = data['name'] as String?;
+      final email        = Supabase.instance.client.auth.currentUser?.email ?? '';
+      final defaultName  = email.split('@')[0];
+      return name != null && name.isNotEmpty && name != defaultName;
+    } catch (_) {
+      return false;
+    }
+  }
+}
+
+// ── Splash ────────────────────────────────────────────────────────────────────
+class _SplashScreen extends StatelessWidget {
+  const _SplashScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: Color(0xFF000000),
       body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+            Text('🥗', style: TextStyle(fontSize: 56)),
+            SizedBox(height: 16),
+            Text('Cal AI',
+                style: TextStyle(
+                  color: Colors.white, fontSize: 28,
+                  fontWeight: FontWeight.w800, letterSpacing: -0.5,
+                )),
+            SizedBox(height: 32),
+            SizedBox(
+              width: 24, height: 24,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: Color(0xFFC1FF72)),
             ),
           ],
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
       ),
     );
   }
