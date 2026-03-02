@@ -1,8 +1,7 @@
 // lib/main.dart
-// Flow: First launch → Onboarding → Auth → Home
-//       Returning user → Auth gate → Home
 import 'package:cal_ai/providers/app_providers.dart';
 import 'package:cal_ai/screens/auth_screen.dart';
+import 'package:cal_ai/services/dart/supabase_auth_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -12,10 +11,9 @@ import 'package:sizer/sizer.dart';
 import 'screens/home_screen.dart';
 import 'screens/onboarding_screen.dart';
 
-const _supabaseUrl     = '';
-const _supabaseAnonKey = '';
-
-const _kOnboardingDone = 'onboarding_complete';
+const _supabaseUrl     = 'https://dorhojloptefwmhjfchb.supabase.co';
+const _supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRvcmhvamxvcHRlZndtaGpmY2hiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyNDg1MzgsImV4cCI6MjA4NzgyNDUzOH0.X2yeKiHaz9WXpjhu5B9lFAFgG5b9A2yWDipXzsMOKj4';
+const kOnboardingDoneKey = 'onboarding_complete'; // public so onboarding_screen can use it
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -32,43 +30,37 @@ void main() async {
     url:     _supabaseUrl,
     anonKey: _supabaseAnonKey,
     authOptions: const FlutterAuthClientOptions(
-      authFlowType: AuthFlowType.pkce,
+      authFlowType: AuthFlowType.implicit,
     ),
   );
 
-  // Read onboarding flag before runApp so there's no flicker
-  final prefs           = await SharedPreferences.getInstance();
-  final onboardingDone  = prefs.getBool(_kOnboardingDone) ?? false;
+  await authService.restoreSession();
 
   runApp(
     ChangeNotifierProvider(
       create: (_) => AppProvider(),
-      child: CalAIApp(onboardingDone: onboardingDone),
+      child: const CalAIApp(),
     ),
   );
 }
 
 class CalAIApp extends StatelessWidget {
-  const CalAIApp({super.key, required this.onboardingDone});
-  final bool onboardingDone;
+  const CalAIApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return Sizer(
       builder: (context, orientation, deviceType) {
         return MaterialApp(
-          title:                    'Cal AI',
+          title:                      'Cal AI',
           debugShowCheckedModeBanner: false,
-          theme:                    _buildTheme(),
-          // Named routes used for post-auth navigation
+          theme:                      _buildTheme(),
           routes: {
-            '/home':        (_) => const HomeScreen(),
-            '/auth':        (_) => const AuthScreen(),
-            '/onboarding':  (_) => const OnboardingScreen(),
+            '/home':       (_) => const HomeScreen(),
+            '/auth':       (_) => const AuthScreen(),
+            '/onboarding': (_) => const OnboardingScreen(),
           },
-          home: onboardingDone
-              ? const _AuthGate()       // returning user → check session
-              : const OnboardingScreen(), // first launch → onboarding
+          home: const _AuthGate(),
         );
       },
     );
@@ -100,8 +92,7 @@ class CalAIApp extends StatelessWidget {
         backgroundColor: const Color(0xFFC1FF72),
         foregroundColor: Colors.black,
         elevation:       0,
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(100)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(100)),
         minimumSize: const Size(double.infinity, 56),
       ),
     ),
@@ -125,7 +116,11 @@ class CalAIApp extends StatelessWidget {
   );
 }
 
-// ── Auth Gate — only reached after onboarding is done ────────────────────────
+// ── Auth Gate — single source of truth for routing ────────────────────────────
+// Logic:
+//   No session          → AuthScreen (OTP login)
+//   Session + no flag   → OnboardingScreen (new user)
+//   Session + flag set  → HomeScreen (returning user)
 class _AuthGate extends StatelessWidget {
   const _AuthGate();
 
@@ -134,44 +129,38 @@ class _AuthGate extends StatelessWidget {
     return StreamBuilder<AuthState>(
       stream: Supabase.instance.client.auth.onAuthStateChange,
       builder: (context, snapshot) {
+        // Still connecting to auth stream
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const _SplashScreen();
+          // Check if we already have a session (from restoreSession)
+          final existingSession = Supabase.instance.client.auth.currentSession;
+          if (existingSession == null) return const _SplashScreen();
         }
 
-        final session = snapshot.data?.session;
+        // Get session from stream OR fallback to current session
+        final session = snapshot.data?.session
+            ?? Supabase.instance.client.auth.currentSession;
 
-        if (session == null) {
-          return const AuthScreen();
-        }
+        // No session → must log in
+        if (session == null) return const AuthScreen();
 
+        // Has session → check onboarding flag
         return FutureBuilder<bool>(
-          future: _isProfileComplete(),
+          future: _isOnboardingDone(),
           builder: (context, snap) {
             if (!snap.hasData) return const _SplashScreen();
-            return snap.data! ? const HomeScreen() : const AuthScreen();
+            // ✅ Flag set → Home, else → Onboarding
+            return snap.data! ? const HomeScreen() : const OnboardingScreen();
           },
         );
       },
     );
   }
 
-  Future<bool> _isProfileComplete() async {
-    try {
-      final uid = Supabase.instance.client.auth.currentUser?.id;
-      if (uid == null) return false;
-      final data = await Supabase.instance.client
-          .from('users')
-          .select('name')
-          .eq('id', uid)
-          .maybeSingle();
-      if (data == null) return false;
-      final name         = data['name'] as String?;
-      final email        = Supabase.instance.client.auth.currentUser?.email ?? '';
-      final defaultName  = email.split('@')[0];
-      return name != null && name.isNotEmpty && name != defaultName;
-    } catch (_) {
-      return false;
-    }
+  // ✅ SIMPLE: just check SharedPreferences flag
+  // Set by onboarding_screen.dart when user completes onboarding
+  Future<bool> _isOnboardingDone() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(kOnboardingDoneKey) ?? false;
   }
 }
 

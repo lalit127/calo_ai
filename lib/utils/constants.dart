@@ -10,7 +10,7 @@ class Constants {
   static const String SPLASH = 'Splash';
   ///Api
   // static const String baseUrl = 'http://192.168.1.6:3200/';
-  static const String baseUrl = 'http://91.108.110.99/';
+  static const String baseUrl = 'https://calo-backend-production.up.railway.app/';
 
 //'http://192.168.1.35:3000/';
 // static const String baseUrl = 'http://192.168.1.12:3200/';

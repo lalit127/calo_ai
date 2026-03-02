@@ -19,7 +19,7 @@ class ApiService {
   // Local dev (Android emulator): http://10.0.2.2:8000
   // Real device: http://YOUR_LAPTOP_IP:8000
   // Production: https://your-railway-app.up.railway.app
-  static const String baseUrl = 'http://10.0.2.2:8000';
+  static const String baseUrl = 'https://calo-backend-production.up.railway.app';
 
   /// Gets the current Supabase JWT — sent to Python backend
   String? get _token =>

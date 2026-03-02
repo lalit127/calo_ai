@@ -1,12 +1,14 @@
-// lib/screens/onboarding_screen.dart
-// Flow: shown only on first launch → saves name/goals locally →
-//       marks onboarding complete → pushes to AuthScreen
-import 'package:cal_ai/screens/auth_screen.dart';
+// lib/screens/onboarding_screen.dart — Cal AI exact design
+// UPDATED: Removed Mistral API key input (backend handles AI now)
+//          Saves profile to Supabase via Python backend instead of SharedPreferences
+import 'package:cal_ai/main.dart'; // kOnboardingDoneKey
+import 'package:cal_ai/providers/app_providers.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:cal_ai/theme/app_text_styles.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-const _kOnboardingDone = 'onboarding_complete';
+import 'package:provider/provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'home_screen.dart';
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
@@ -19,65 +21,89 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final _nameController    = TextEditingController();
   final _calorieController = TextEditingController(text: '2000');
   final _proteinController = TextEditingController(text: '150');
-  int    _currentPage   = 0;
-  String _selectedGoal  = 'Lose Weight';
-  bool   _finishing     = false;
+
+  // No more API key controller — backend handles AI
+  int    _currentPage  = 0;
+  String _selectedGoal = 'Lose Weight';
+  bool   _saving       = false;
 
   static const _lime = Color(0xFFC1FF72);
-
-  @override
-  void dispose() {
-    _pageController.dispose();
-    _nameController.dispose();
-    _calorieController.dispose();
-    _proteinController.dispose();
-    super.dispose();
-  }
 
   void _next() {
     if (_currentPage < 3) {
       _pageController.nextPage(
-          duration: const Duration(milliseconds: 350),
-          curve: Curves.easeInOut);
+          duration: const Duration(milliseconds: 350), curve: Curves.easeInOut);
     } else {
       _finish();
     }
   }
 
+  // Saves profile to Supabase via Python backend
+// Replace the _finish() method in onboarding_screen.dart
+// This saves directly to Supabase — no backend call needed for profile setup.
+// Bypasses the Railway timeout issue completely.
+
   Future<void> _finish() async {
-    if (_finishing) return;
-    setState(() => _finishing = true);
+    setState(() => _saving = true);
+    try {
+      final client = Supabase.instance.client;
+      final user   = client.auth.currentUser;
 
-    // Save everything directly to SharedPreferences — user is NOT logged in yet.
-    // StorageService.setUserName/setGoalCalories would crash because they call
-    // Supabase which requires an authenticated session.
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-        'pending_name',
-        _nameController.text.trim().isEmpty
-            ? 'User'
-            : _nameController.text.trim());
-    await prefs.setInt(
-        'pending_goal_calories',
-        int.tryParse(_calorieController.text) ?? 2000);
-    await prefs.setDouble(
-        'pending_goal_protein',
-        double.tryParse(_proteinController.text) ?? 150.0);
+      print('DEBUG token: ${client.auth.currentSession?.accessToken}');
+      print('DEBUG userId: ${user?.id}');
 
-    // Mark onboarding as done so it never shows again
-    await prefs.setBool(_kOnboardingDone, true);
+      if (user == null) {
+        throw Exception('Not logged in. Please sign in again.');
+      }
 
-    if (!mounted) return;
+      final name = _nameController.text.trim();
 
-    // Navigate to Auth — replace so back button can't return to onboarding
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const AuthScreen()),
-    );
+      // ✅ Save directly to Supabase — no Railway/backend needed for this step
+      await client.from('users').upsert({
+        'id':            user.id,
+        'email':         user.email,
+        'name':          name.isEmpty ? user.email!.split('@')[0] : name,
+        'goal':          _goalKey(_selectedGoal),
+        'goal_calories': int.tryParse(_calorieController.text) ?? 2000,
+        'goal_protein':  double.tryParse(_proteinController.text) ?? 150.0,
+        'updated_at':    DateTime.now().toIso8601String(),
+      }, onConflict: 'id');
+
+      print('DEBUG: profile saved to Supabase ✅');
+
+      // Mark onboarding complete
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(kOnboardingDoneKey, true);
+
+      if (mounted) {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const HomeScreen()),
+              (route) => false,
+        );
+      }
+    } catch (e) {
+      print('DEBUG onboarding error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: Colors.red.shade800,
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      setState(() => _saving = false);
+    }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  //  BUILD
-  // ═══════════════════════════════════════════════════════════════════════════
+  String _goalKey(String label) {
+    const map = {
+      'Lose Weight':     'lose_weight',
+      'Build Muscle':    'build_muscle',
+      'Maintain Weight': 'maintain',
+      'Eat Healthier':   'eat_healthier',
+    };
+    return map[label] ?? 'maintain';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -86,27 +112,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Progress bar
+            // ── Progress dots — unchanged UI ──────────────────────────────
             Padding(
               padding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
               child: Row(
-                children: List.generate(4, (i) {
-                  return Expanded(
-                    child: Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 3),
-                      height: 3,
-                      decoration: BoxDecoration(
-                        color: i <= _currentPage
-                            ? _lime
-                            : const Color(0xFF222222),
-                        borderRadius: BorderRadius.circular(2),
-                      ),
+                children: List.generate(4, (i) => Expanded(
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    height: 3,
+                    decoration: BoxDecoration(
+                      color: i <= _currentPage ? _lime : const Color(0xFF222222),
+                      borderRadius: BorderRadius.circular(2),
                     ),
-                  );
-                }),
+                  ),
+                )),
               ),
             ),
-
             Expanded(
               child: PageView(
                 controller: _pageController,
@@ -115,17 +136,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 children: [_page1(), _page2(), _page3(), _page4()],
               ),
             ),
-
-            // CTA button
+            // ── CTA button ────────────────────────────────────────────────
             Padding(
               padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
               child: Column(
                 children: [
                   SizedBox(
-                    width: double.infinity,
-                    height: 58,
+                    width: double.infinity, height: 58,
                     child: ElevatedButton(
-                      onPressed: _finishing ? null : _next,
+                      onPressed: _saving ? null : _next,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: _lime,
                         foregroundColor: Colors.black,
@@ -134,18 +153,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             borderRadius: BorderRadius.circular(100)),
                         elevation: 0,
                       ),
-                      child: _finishing
+                      child: _saving
                           ? const SizedBox(
                           width: 22, height: 22,
                           child: CircularProgressIndicator(
                               strokeWidth: 2.5, color: Colors.black))
                           : Text(
-                        _currentPage < 3 ? 'Continue' : 'Get Started',
-                        style: AppTextStyles(context)
-                            .display17W700
-                            .copyWith(
-                            color: Colors.black,
-                            letterSpacing: -0.3),
+                        _currentPage < 3 ? 'Continue' : 'Start Tracking',
+                        style: AppTextStyles(context).display17W700.copyWith(
+                            color: Colors.black, letterSpacing: -0.3),
                       ),
                     ),
                   ),
@@ -166,7 +182,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     );
   }
 
-  // ── Page 1: Welcome ───────────────────────────────────────────────────────
+  // ── Page 1: Welcome — unchanged UI ───────────────────────────────────────
   Widget _page1() {
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(24, 40, 24, 24),
@@ -190,10 +206,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             ],
           ),
           const SizedBox(height: 48),
-          Text('Track calories\nwith just a\npicture 📸',
-              style: AppTextStyles(context).display18W700.copyWith(
-                  fontSize: 42, fontWeight: FontWeight.w800,
-                  color: Colors.white, letterSpacing: -1.5, height: 1.1)),
+          Text(
+            'Track calories\nwith just a\npicture 📸',
+            style: AppTextStyles(context).display18W700.copyWith(
+              fontSize: 42, fontWeight: FontWeight.w800,
+              color: Colors.white, letterSpacing: -1.5, height: 1.1,
+            ),
+          ),
           const SizedBox(height: 20),
           Text(
             'The fastest, most accurate calorie tracker. Snap your food — AI does the rest.',
@@ -201,7 +220,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 color: const Color(0xFF888888), height: 1.5),
           ),
           const SizedBox(height: 40),
-          // Social proof card
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
@@ -209,13 +227,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 borderRadius: BorderRadius.circular(20)),
             child: Column(
               children: [
-                Row(children: [
-                  _starRow(),
-                  const Spacer(),
-                  Text('4.9 / 5',
-                      style: AppTextStyles(context).display16W700.copyWith(
-                          color: Colors.white)),
-                ]),
+                Row(
+                  children: [
+                    _starRow(),
+                    const Spacer(),
+                    Text('4.9 / 5',
+                        style: AppTextStyles(context).display16W700.copyWith(
+                            color: Colors.white)),
+                  ],
+                ),
                 const SizedBox(height: 12),
                 Text(
                   '"Cal AI is literally the best calorie tracker. Fastest and most accurate I\'ve ever used."',
@@ -223,69 +243,65 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       color: const Color(0xFFCCCCCC), height: 1.5),
                 ),
                 const SizedBox(height: 8),
-                Row(children: [
-                  Container(
-                    width: 28, height: 28,
-                    decoration: BoxDecoration(
-                        color: _lime,
-                        borderRadius: BorderRadius.circular(14)),
-                    child: Center(
-                        child: Text('A',
-                            style: AppTextStyles(context).display13W700.copyWith(
-                                color: Colors.black))),
-                  ),
-                  const SizedBox(width: 8),
-                  Text('Alex Eubank',
-                      style: AppTextStyles(context).display13W400.copyWith(
-                          color: const Color(0xFF888888))),
-                ]),
+                Row(
+                  children: [
+                    Container(
+                      width: 28, height: 28,
+                      decoration: BoxDecoration(
+                          color: _lime, borderRadius: BorderRadius.circular(14)),
+                      child: Center(
+                          child: Text('A',
+                              style: AppTextStyles(context).display13W700.copyWith(
+                                  color: Colors.black))),
+                    ),
+                    const SizedBox(width: 8),
+                    Text('Alex Eubank',
+                        style: AppTextStyles(context).display13W400.copyWith(
+                            color: const Color(0xFF888888))),
+                  ],
+                ),
               ],
             ),
           ),
           const SizedBox(height: 16),
-          Row(children: [
-            _statBadge('5M+', 'Users'),
-            const SizedBox(width: 12),
-            _statBadge('100K+', '5-star ratings'),
-            const SizedBox(width: 12),
-            _statBadge('#1', 'Health App'),
-          ]),
+          Row(
+            children: [
+              _statBadge('5M+', 'Users'),
+              const SizedBox(width: 12),
+              _statBadge('100K+', '5-star ratings'),
+              const SizedBox(width: 12),
+              _statBadge('#1', 'Health App'),
+            ],
+          ),
           const SizedBox(height: 32),
-          _inputField(_nameController, 'Your name (optional)',
-              Icons.person_outline),
+          _inputField(_nameController, 'Your name (optional)', Icons.person_outline),
         ],
       ),
     );
   }
 
-  // ── Page 2: Goal ──────────────────────────────────────────────────────────
+  // ── Page 2: Goal — unchanged UI ──────────────────────────────────────────
   Widget _page2() {
-    final goals = [
-      'Lose Weight', 'Build Muscle', 'Maintain Weight', 'Eat Healthier'
-    ];
-    final icons = {
-      'Lose Weight':      '🔥',
-      'Build Muscle':     '💪',
-      'Maintain Weight':  '⚖️',
-      'Eat Healthier':    '🥦',
-    };
-
+    final goals = ['Lose Weight', 'Build Muscle', 'Maintain Weight', 'Eat Healthier'];
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(24, 40, 24, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('What\'s your\nmain goal?',
+          Text("What's your\nmain goal?",
               style: AppTextStyles(context).display18W700.copyWith(
                   color: Colors.white, fontSize: 38,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: -1, height: 1.1)),
+                  fontWeight: FontWeight.w700, letterSpacing: -1, height: 1.1)),
           const SizedBox(height: 8),
-          Text('We\'ll personalize your experience',
+          Text("We'll personalize your experience",
               style: AppTextStyles(context).display15W400.copyWith(
                   color: const Color(0xFF666666))),
           const SizedBox(height: 36),
           ...goals.map((g) {
+            final icons = {
+              'Lose Weight': '🔥', 'Build Muscle': '💪',
+              'Maintain Weight': '⚖️', 'Eat Healthier': '🥦',
+            };
             final selected = _selectedGoal == g;
             return GestureDetector(
               onTap: () => setState(() => _selectedGoal = g),
@@ -293,43 +309,39 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 margin: const EdgeInsets.only(bottom: 12),
                 padding: const EdgeInsets.all(18),
                 decoration: BoxDecoration(
-                  color: selected
-                      ? _lime.withOpacity(0.12)
-                      : const Color(0xFF111111),
+                  color: selected ? _lime.withOpacity(0.12) : const Color(0xFF111111),
                   borderRadius: BorderRadius.circular(18),
                   border: Border.all(
-                    color: selected ? _lime : Colors.transparent,
-                    width: 1.5,
-                  ),
+                      color: selected ? _lime : Colors.transparent, width: 1.5),
                 ),
-                child: Row(children: [
-                  Text(icons[g]!,
-                      style: AppTextStyles(context).display24W400),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Text(g,
-                        style: AppTextStyles(context).display16W600.copyWith(
-                            color: selected ? _lime : Colors.white)),
-                  ),
-                  if (selected)
-                    Container(
-                      width: 22, height: 22,
-                      decoration: BoxDecoration(
-                          color: _lime,
-                          borderRadius: BorderRadius.circular(11)),
-                      child: const Icon(Icons.check,
-                          size: 14, color: Colors.black),
+                child: Row(
+                  children: [
+                    Text(icons[g]!,
+                        style: AppTextStyles(context).display24W400),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Text(g,
+                          style: AppTextStyles(context).display16W600.copyWith(
+                              color: selected ? _lime : Colors.white)),
                     ),
-                ]),
+                    if (selected)
+                      Container(
+                        width: 22, height: 22,
+                        decoration: BoxDecoration(
+                            color: _lime, borderRadius: BorderRadius.circular(11)),
+                        child: const Icon(Icons.check, size: 14, color: Colors.black),
+                      ),
+                  ],
+                ),
               ),
             );
-          }),
+          }).toList(),
         ],
       ),
     );
   }
 
-  // ── Page 3: Goals ─────────────────────────────────────────────────────────
+  // ── Page 3: Goals — REMOVED Mistral API key, kept calorie/protein goals ──
   Widget _page3() {
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(24, 40, 24, 24),
@@ -345,6 +357,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               style: AppTextStyles(context).display15W400.copyWith(
                   color: const Color(0xFF666666))),
           const SizedBox(height: 36),
+
           Text('DAILY CALORIES',
               style: AppTextStyles(context).display11W500.copyWith(
                   color: const Color(0xFF555555), letterSpacing: 1.2)),
@@ -353,6 +366,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               Icons.local_fire_department_outlined,
               keyboardType: TextInputType.number),
           const SizedBox(height: 20),
+
           Text('PROTEIN GOAL (g)',
               style: AppTextStyles(context).display11W500.copyWith(
                   color: const Color(0xFF555555), letterSpacing: 1.2)),
@@ -361,23 +375,59 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               Icons.fitness_center_outlined,
               keyboardType: TextInputType.number),
           const SizedBox(height: 28),
+
           Text('QUICK PRESETS',
               style: AppTextStyles(context).display11W500.copyWith(
                   color: const Color(0xFF555555), letterSpacing: 1.2)),
           const SizedBox(height: 12),
-          Row(children: [
-            _presetChip('Cut', '1500', '130'),
-            const SizedBox(width: 8),
-            _presetChip('Maintain', '2000', '150'),
-            const SizedBox(width: 8),
-            _presetChip('Bulk', '2600', '180'),
-          ]),
+          Row(
+            children: [
+              _presetChip('Cut',      '1500', '130'),
+              const SizedBox(width: 8),
+              _presetChip('Maintain', '2000', '150'),
+              const SizedBox(width: 8),
+              _presetChip('Bulk',     '2600', '180'),
+            ],
+          ),
+          const SizedBox(height: 28),
+
+          // ── AI info box (replaces API key input) ──────────────────────
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: _lime.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: _lime.withOpacity(0.2)),
+            ),
+            child: Row(
+              children: [
+                const Text('🤖', style: TextStyle(fontSize: 20)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('AI is ready to go',
+                          style: AppTextStyles(context).display14W600.copyWith(
+                              color: Colors.white)),
+                      const SizedBox(height: 4),
+                      Text(
+                        'No API key needed — our backend handles AI analysis for you.',
+                        style: AppTextStyles(context).display12W400.copyWith(
+                            color: const Color(0xFF999999), height: 1.4),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
 
-  // ── Page 4: All set ───────────────────────────────────────────────────────
+  // ── Page 4: All set — unchanged UI ───────────────────────────────────────
   Widget _page4() {
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(24, 40, 24, 24),
@@ -388,20 +438,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             width: 72, height: 72,
             decoration: BoxDecoration(
                 color: _lime, borderRadius: BorderRadius.circular(20)),
-            child: Center(
-                child: Text('🎯',
-                    style: AppTextStyles(context)
-                        .display36W700
-                        .copyWith(fontWeight: FontWeight.w400))),
+            child: Center(child: Text('🎯',
+                style: AppTextStyles(context)
+                    .display36W700
+                    .copyWith(fontWeight: FontWeight.w400))),
           ),
           const SizedBox(height: 32),
-          Text('You\'re all\nset up! 🚀',
+          Text("You're all\nset up! 🚀",
               style: AppTextStyles(context).display36W700.copyWith(
                   fontSize: 42, fontWeight: FontWeight.w800,
                   color: Colors.white, letterSpacing: -1.5, height: 1.1)),
           const SizedBox(height: 16),
           Text(
-            'Create your account to start tracking. It only takes a few seconds.',
+            'Start tracking your meals with AI. Just snap a photo and get instant nutrition data.',
             style: AppTextStyles(context).display16W400.copyWith(
                 color: const Color(0xFF888888), height: 1.5),
           ),
@@ -418,48 +467,49 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: _lime.withOpacity(0.3)),
             ),
-            child: Row(children: [
-              const Text('💡', style: TextStyle(fontSize: 24)),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Text(
-                  'Pro tip: Good lighting = better AI accuracy. Place food on a flat surface.',
-                  style: AppTextStyles(context).display14W400.copyWith(
-                      color: const Color(0xFFCCCCCC), height: 1.4),
+            child: Row(
+              children: [
+                Text('💡', style: AppTextStyles(context).display24W400),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Text(
+                    'Pro tip: Good lighting = better AI accuracy. Place food on a flat surface.',
+                    style: AppTextStyles(context).display14W400.copyWith(
+                        color: const Color(0xFFCCCCCC), height: 1.4),
+                  ),
                 ),
-              ),
-            ]),
+              ],
+            ),
           ),
         ],
       ),
     );
   }
 
-  // ── Reusable widgets ──────────────────────────────────────────────────────
-
+  // ── Shared helpers — unchanged UI ────────────────────────────────────────
   Widget _checkItem(String emoji, String text) => Padding(
     padding: const EdgeInsets.only(bottom: 18),
-    child: Row(children: [
-      Container(
-        width: 44, height: 44,
-        decoration: BoxDecoration(
-            color: const Color(0xFF111111),
-            borderRadius: BorderRadius.circular(12)),
-        child: Center(child: Text(emoji,
-            style: AppTextStyles(context).display20W500)),
-      ),
-      const SizedBox(width: 16),
-      Expanded(
-        child: Text(text,
+    child: Row(
+      children: [
+        Container(
+          width: 44, height: 44,
+          decoration: BoxDecoration(
+              color: const Color(0xFF111111),
+              borderRadius: BorderRadius.circular(12)),
+          child: Center(child: Text(emoji,
+              style: AppTextStyles(context).display20W500)),
+        ),
+        const SizedBox(width: 16),
+        Expanded(child: Text(text,
             style: AppTextStyles(context).display15W500.copyWith(
-                color: Colors.white)),
-      ),
-    ]),
+                color: Colors.white))),
+      ],
+    ),
   );
 
   Widget _starRow() => Row(
-    children: List.generate(5, (_) => const Icon(
-        Icons.star_rounded, color: Color(0xFFFFC107), size: 18)),
+    children: List.generate(5, (_) =>
+    const Icon(Icons.star_rounded, color: Color(0xFFFFC107), size: 18)),
   );
 
   Widget _statBadge(String value, String label) => Expanded(
@@ -468,16 +518,18 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       decoration: BoxDecoration(
           color: const Color(0xFF111111),
           borderRadius: BorderRadius.circular(14)),
-      child: Column(children: [
-        Text(value,
-            style: AppTextStyles(context).display18W700.copyWith(
-                color: const Color(0xFFC1FF72))),
-        const SizedBox(height: 2),
-        Text(label,
-            textAlign: TextAlign.center,
-            style: AppTextStyles(context).display10W400.copyWith(
-                color: const Color(0xFF666666))),
-      ]),
+      child: Column(
+        children: [
+          Text(value,
+              style: AppTextStyles(context).display18W700.copyWith(
+                  color: const Color(0xFFC1FF72))),
+          const SizedBox(height: 2),
+          Text(label,
+              textAlign: TextAlign.center,
+              style: AppTextStyles(context).display10W400.copyWith(
+                  color: const Color(0xFF666666))),
+        ],
+      ),
     ),
   );
 
@@ -492,15 +544,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         decoration: BoxDecoration(
             color: const Color(0xFF111111),
             borderRadius: BorderRadius.circular(12)),
-        child: Column(children: [
-          Text(label,
-              style: AppTextStyles(context).display13W600.copyWith(
-                  color: Colors.white)),
-          const SizedBox(height: 2),
-          Text('$cal kcal',
-              style: AppTextStyles(context).display11W400.copyWith(
-                  color: const Color(0xFF666666))),
-        ]),
+        child: Column(
+          children: [
+            Text(label,
+                style: AppTextStyles(context).display13W600.copyWith(
+                    color: Colors.white)),
+            const SizedBox(height: 2),
+            Text('$cal kcal',
+                style: AppTextStyles(context).display11W400.copyWith(
+                    color: const Color(0xFF666666))),
+          ],
+        ),
       ),
     ),
   );
@@ -514,21 +568,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         Widget? suffix,
       }) =>
       TextField(
-        controller:   controller,
+        controller: controller,
         keyboardType: keyboardType,
-        obscureText:  obscure,
+        obscureText: obscure,
         style: AppTextStyles(context).display15W500.copyWith(color: Colors.white),
         decoration: InputDecoration(
           hintText: hint,
           hintStyle: AppTextStyles(context).display15W400.copyWith(
               color: const Color(0xFF444444)),
-          prefixIcon:
-          Icon(icon, color: const Color(0xFF555555), size: 20),
+          prefixIcon: Icon(icon, color: const Color(0xFF555555), size: 20),
           suffixIcon: suffix != null
-              ? Padding(
-              padding: const EdgeInsets.only(right: 14), child: suffix)
+              ? Padding(padding: const EdgeInsets.only(right: 14), child: suffix)
               : null,
-          filled:    true,
+          filled: true,
           fillColor: const Color(0xFF111111),
           border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),

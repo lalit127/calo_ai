@@ -1,113 +1,182 @@
 // lib/providers/app_provider.dart
-// Replaces StorageService — all data comes from Supabase via Python backend
-import 'package:cal_ai/services/dart/api_service.dart';
+// Uses Supabase directly for all data operations.
+// Only food AI analysis (camera) still goes through Railway backend.
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/food_entry.dart';
 
 class AppProvider extends ChangeNotifier {
-  final _api = apiService;
+  final _db = Supabase.instance.client;
+
+  String get _uid => _db.auth.currentUser!.id;
 
   // ── State ─────────────────────────────────────────────────────────────────
   Map<String, dynamic> _profile = {};
-  Map<String, dynamic> _daily   = {};
-  Map<String, dynamic> _weekly  = {};
-  Map<String, dynamic> _water   = {};
+  List<FoodEntry>      _entries = [];
+  int                  _totalWater = 0;
 
-  bool _loadingProfile = false;
   bool _loadingDaily   = false;
-  bool _loadingWeekly  = false;
+  bool _loadingProfile = false;
 
   // ── Getters ───────────────────────────────────────────────────────────────
-  Map<String, dynamic> get profile => _profile;
-  Map<String, dynamic> get daily   => _daily;
-  Map<String, dynamic> get weekly  => _weekly;
-  Map<String, dynamic> get water   => _water;
-
-  bool get loadingProfile => _loadingProfile;
   bool get loadingDaily   => _loadingDaily;
-  bool get loadingWeekly  => _loadingWeekly;
+  bool get loadingProfile => _loadingProfile;
 
-  // Profile values (with defaults matching original StorageService defaults)
-  String get userName    => (_profile['name'] as String?)?.isNotEmpty == true
+  String get userName => (_profile['name'] as String?)?.isNotEmpty == true
       ? _profile['name'] as String
-      : Supabase.instance.client.auth.currentUser?.email?.split('@')[0] ?? 'User';
+      : _db.auth.currentUser?.email?.split('@')[0] ?? 'User';
 
-  int    get goalCalories => (_profile['goal_calories'] as int?)    ?? 2000;
+  int    get goalCalories => (_profile['goal_calories'] as int?)         ?? 2000;
   double get goalProtein  => (_profile['goal_protein']  as num?)?.toDouble() ?? 150.0;
   double get goalCarbs    => (_profile['goal_carbs']    as num?)?.toDouble() ?? 250.0;
   double get goalFat      => (_profile['goal_fat']      as num?)?.toDouble() ?? 65.0;
-  int    get goalWaterMl  => (_profile['goal_water_ml'] as int?)    ?? 2500;
+  int    get goalWaterMl  => (_profile['goal_water_ml'] as int?)         ?? 2500;
 
-  // Daily totals
-  int    get totalCal     => (_daily['total_calories'] as int?)    ?? 0;
-  double get totalProtein => (_daily['total_protein']  as num?)?.toDouble() ?? 0.0;
-  double get totalCarbs   => (_daily['total_carbs']    as num?)?.toDouble() ?? 0.0;
-  double get totalFat     => (_daily['total_fat']      as num?)?.toDouble() ?? 0.0;
-  int    get totalWater   => (_water['total_ml']       as int?)    ?? 0;
+  List<FoodEntry> get todayEntries => _entries;
 
-  List<FoodEntry> get todayEntries {
-    final raw = List<Map<String, dynamic>>.from(_daily['entries'] ?? []);
-    return raw.map(FoodEntry.fromJson).toList();
-  }
+  int get totalCal     => _entries.fold(0, (s, e) => s + e.calories);
+  double get totalProtein => _entries.fold(0.0, (s, e) => s + e.protein);
+  double get totalCarbs   => _entries.fold(0.0, (s, e) => s + e.carbs);
+  double get totalFat     => _entries.fold(0.0, (s, e) => s + e.fat);
+  int    get totalWater   => _totalWater;
 
-  // ── Init — loads everything on first open ─────────────────────────────────
+  // ── Init ──────────────────────────────────────────────────────────────────
   Future<void> init() async {
     await Future.wait([loadProfile(), loadDaily(), loadWater()]);
   }
 
+  // ── Profile ───────────────────────────────────────────────────────────────
   Future<void> loadProfile() async {
-    _loadingProfile = true; notifyListeners();
+    _loadingProfile = true;
+    notifyListeners();
     try {
-      _profile = await _api.getProfile();
-    } catch (_) {
-      // Keep defaults if backend unreachable
+      final data = await _db
+          .from('users')
+          .select()
+          .eq('id', _uid)
+          .maybeSingle();
+      if (data != null) _profile = Map<String, dynamic>.from(data);
+    } catch (e) {
+      debugPrint('loadProfile error: $e');
     } finally {
-      _loadingProfile = false; notifyListeners();
-    }
-  }
-
-  Future<void> loadDaily({String? date}) async {
-    _loadingDaily = true; notifyListeners();
-    try {
-      _daily = await _api.getDailyNutrition(date: date);
-    } catch (_) {} finally {
-      _loadingDaily = false; notifyListeners();
-    }
-  }
-
-  Future<void> loadWeekly() async {
-    _loadingWeekly = true; notifyListeners();
-    try {
-      _weekly = await _api.getWeeklyStats();
-    } catch (_) {} finally {
-      _loadingWeekly = false; notifyListeners();
-    }
-  }
-
-  Future<void> loadWater() async {
-    try {
-      _water = await _api.getTodayWater();
+      _loadingProfile = false;
       notifyListeners();
-    } catch (_) {}
-  }
-
-  Future<void> logWater(int ml) async {
-    await _api.logWater(ml);
-    await loadWater();
-  }
-
-  Future<void> deleteEntry(String id) async {
-    await _api.deleteLog(id);
-    await loadDaily();
+    }
   }
 
   Future<void> updateProfile(Map<String, dynamic> updates) async {
+    await _db.from('users').upsert({
+      'id': _uid,
+      ...updates,
+      'updated_at': DateTime.now().toIso8601String(),
+    }, onConflict: 'id');
+    _profile = {..._profile, ...updates};
+    notifyListeners();
+  }
+
+  // ── Daily food entries ────────────────────────────────────────────────────
+  Future<void> loadDaily({String? date}) async {
+    _loadingDaily = true;
+    notifyListeners();
     try {
-      _profile = await _api.updateProfile(updates);
+      final now   = date != null ? DateTime.parse(date) : DateTime.now();
+      final start = DateTime(now.year, now.month, now.day).toIso8601String();
+      final end   = DateTime(now.year, now.month, now.day, 23, 59, 59).toIso8601String();
+
+      final data = await _db
+          .from('food_logs')
+          .select()
+          .eq('user_id', _uid)
+          .isFilter('deleted_at', null)
+          .gte('logged_at', start)
+          .lte('logged_at', end)
+          .order('logged_at', ascending: false);
+
+      _entries = (data as List)
+          .map((e) => FoodEntry.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } catch (e) {
+      debugPrint('loadDaily error: $e');
+    } finally {
+      _loadingDaily = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> deleteEntry(String id) async {
+    await _db
+        .from('food_logs')
+        .update({'deleted_at': DateTime.now().toIso8601String()})
+        .eq('id', id)
+        .eq('user_id', _uid);
+    await loadDaily();
+  }
+
+  // ── Water ─────────────────────────────────────────────────────────────────
+  Future<void> loadWater() async {
+    try {
+      final now   = DateTime.now();
+      final start = DateTime(now.year, now.month, now.day).toIso8601String();
+      final end   = DateTime(now.year, now.month, now.day, 23, 59, 59).toIso8601String();
+
+      final data = await _db
+          .from('water_logs')
+          .select('amount_ml')
+          .eq('user_id', _uid)
+          .gte('logged_at', start)
+          .lte('logged_at', end);
+
+      _totalWater = (data as List)
+          .fold<int>(0, (sum, row) => sum + (row['amount_ml'] as int));
       notifyListeners();
     } catch (e) {
-      rethrow;
+      debugPrint('loadWater error: $e');
+    }
+  }
+
+  Future<void> logWater(int ml) async {
+    await _db.from('water_logs').insert({
+      'user_id':   _uid,
+      'amount_ml': ml,
+      'logged_at': DateTime.now().toIso8601String(),
+    });
+    await loadWater();
+  }
+
+  // ── Weekly stats (for StatsScreen) ───────────────────────────────────────
+  Future<List<Map<String, dynamic>>> loadWeekly() async {
+    try {
+      final now   = DateTime.now();
+      final start = DateTime(now.year, now.month, now.day - 6).toIso8601String();
+
+      final data = await _db
+          .from('food_logs')
+          .select('calories, protein_g, logged_at')
+          .eq('user_id', _uid)
+          .isFilter('deleted_at', null)
+          .gte('logged_at', start)
+          .order('logged_at', ascending: true);
+
+      // Build 7-day buckets
+      final days = <Map<String, dynamic>>[];
+      for (int i = 6; i >= 0; i--) {
+        final d       = DateTime(now.year, now.month, now.day - i);
+        final dayStr  = d.toIso8601String().substring(0, 10);
+        final dayLogs = (data as List).where((l) =>
+            (l['logged_at'] as String).startsWith(dayStr)).toList();
+        final cal     = dayLogs.fold<int>(0, (s, l) => s + (l['calories'] as int));
+        days.add({
+          'date'    : dayStr,
+          'calories': cal,
+          'protein' : dayLogs.fold<double>(0, (s, l) => s + (l['protein_g'] as num).toDouble()),
+          'logged'  : cal > 0,
+          'goal_met': cal >= goalCalories * 0.8,
+        });
+      }
+      return days;
+    } catch (e) {
+      debugPrint('loadWeekly error: $e');
+      return [];
     }
   }
 }

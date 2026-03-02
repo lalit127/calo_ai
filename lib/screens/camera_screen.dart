@@ -4,6 +4,7 @@ import 'package:cal_ai/services/dart/api_service.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/food_entry.dart';
 import '../theme/app_text_styles.dart';
@@ -66,8 +67,10 @@ class _CameraScreenState extends State<CameraScreen> {
     if (t.isEmpty) return;
     setState(() { _analyzing = true; _error = null; });
     try {
+      // ✅ await the future properly
       final json = await _api.analyzeText(t, cuisineHint: 'indian');
-      setState(() async => _result = NutritionResult.fromJson(await json));
+      final data = await json;
+      setState(() => _result = NutritionResult.fromJson(data));
     } on ApiException catch (e) {
       setState(() => _error = e.message);
     } catch (e) {
@@ -81,23 +84,26 @@ class _CameraScreenState extends State<CameraScreen> {
   Future<void> _log() async {
     if (_result == null) return;
     setState(() => _saving = true);
-
     try {
-      if (_image != null) {
-        // Full flow: upload image + analyze + save → one call
-        await _api.logWithImage(imageFile: _image!, mealType: _mealType);
-      } else {
-        // Text-only: manual save
-        await _api.logManual(
-          foodName:    _result!.foodName,
-          mealType:    _mealType,
-          calories:    _result!.calories,
-          proteinG:    _result!.protein,
-          carbsG:      _result!.carbs,
-          fatG:        _result!.fat,
-          portionSize: _result!.portionSize,
-        );
-      }
+      final client = Supabase.instance.client;
+      final uid    = client.auth.currentUser!.id;
+
+      await client.from('food_logs').insert({
+        'user_id':       uid,
+        'food_name':     _result!.foodName,
+        'meal_type':     _mealType,
+        'calories':      _result!.calories,
+        'protein_g':     _result!.protein,
+        'carbs_g':       _result!.carbs,
+        'fat_g':         _result!.fat,
+        'fiber_g':       _result!.fiber,
+        'cuisine_type':  _result!.cuisineType,
+        'is_indian_food': _result!.isIndianFood,
+        'portion_size':  _result!.portionSize,
+        'ai_confidence': _result!.confidence,
+        'image_url':     null, // image upload handled separately if needed
+        'logged_at':     DateTime.now().toIso8601String(),
+      });
 
       if (mounted) {
         Navigator.pop(context);
@@ -105,12 +111,11 @@ class _CameraScreenState extends State<CameraScreen> {
           content: Text('✅ ${_result!.foodName} added to your log'),
           backgroundColor: kSurface,
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(14)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         ));
       }
-    } on ApiException catch (e) {
-      setState(() => _error = e.message);
+    } catch (e) {
+      setState(() => _error = 'Failed to save: $e');
     } finally {
       setState(() => _saving = false);
     }
