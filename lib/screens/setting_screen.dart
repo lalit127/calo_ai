@@ -117,63 +117,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const SizedBox(height: 8),
                   _inputTile('Protein (g)', _proCtrl, Icons.fitness_center_outlined,
                       hint: '150', keyboardType: TextInputType.number),
-
-                  const SizedBox(height: 20),
-                  _sectionLabel('AI CONFIGURATION'),
-                  const SizedBox(height: 10),
-                  // API key tile
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: kSurface,
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Icon(Icons.key_outlined, color: kGray, size: 18),
-                            const SizedBox(width: 10),
-                            const Text('Mistral API Key',
-                                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                          ],
-                        ),
-                        const SizedBox(height: 10),
-                        TextField(
-                          controller: _keyCtrl,
-                          obscureText: _obscure,
-                          style: AppTextStyles(context).display13W500.copyWith(color: Colors.white,fontFamily: 'monospace'),
-                          decoration: InputDecoration(
-                            hintText: 'Paste your key here',
-                            hintStyle: const TextStyle(color: Color(0xFF444444)),
-                            filled: true,
-                            fillColor: const Color(0xFF1A1A1A),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10),
-                              borderSide: BorderSide.none,
-                            ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10),
-                              borderSide: const BorderSide(color: kLime, width: 1.5),
-                            ),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                            suffixIcon: GestureDetector(
-                              onTap: () => setState(() => _obscure = !_obscure),
-                              child: Icon(
-                                _obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
-                                color: kGray, size: 18,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        const Text('Get a free key at console.mistral.ai',
-                            style: TextStyle(color: kGray, fontSize: 12)),
-                      ],
-                    ),
-                  ),
-
                   const SizedBox(height: 20),
                   _sectionLabel('APP INFO'),
                   const SizedBox(height: 10),
@@ -185,8 +128,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     child: Column(
                       children: [
                         _infoRow('Version', '1.0.0', first: true),
-                        _divider(),
-                        _infoRow('AI Model', 'Mistral Pixtral-12b'),
                         _divider(),
                         _infoRow('Made with', '❤️ + Flutter'),
                       ],

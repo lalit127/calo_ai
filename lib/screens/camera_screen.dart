@@ -1,6 +1,7 @@
 // lib/screens/camera_screen.dart
 import 'dart:io';
 import 'package:cal_ai/services/dart/api_service.dart';
+import 'package:cal_ai/theme/app_colors.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -391,11 +392,16 @@ class _CameraScreenState extends State<CameraScreen> {
   // ── Analyzing spinner ─────────────────────────────────────────────────────
   Widget _buildAnalyzing() => Padding(
     padding: const EdgeInsets.symmetric(vertical: 32),
-    child: Column(children: [
-      const SizedBox(
-        width: 48, height: 48,
-        child: CircularProgressIndicator(
-            color: kLime, strokeWidth: 3),
+    child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+      Center(
+        child: const SizedBox(
+          width: 48, height: 48,
+          child: CircularProgressIndicator(
+              color: kLime, strokeWidth: 3),
+        ),
       ),
       const SizedBox(height: 16),
       Text('Analyzing with AI...',
@@ -683,7 +689,7 @@ class _CameraScreenState extends State<CameraScreen> {
                 child: CircularProgressIndicator(
                     strokeWidth: 2.5, color: Colors.black))
                 : Text('Add to Log',
-                style: AppTextStyles(context).display17W700),
+                style: AppTextStyles(context).display17W700.copyWith(color: AppColors.black)),
           ),
         ),
       ],
