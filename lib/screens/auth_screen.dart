@@ -14,76 +14,105 @@ import 'package:shared_preferences/shared_preferences.dart';
 //  PROVIDER
 // ═══════════════════════════════════════════════════════════════════════════
 
-enum OtpStep { enterEmail, enterCode }
+enum OtpStep { email, code }
 
 class AuthProvider extends ChangeNotifier {
-  OtpStep step          = OtpStep.enterEmail;
-  bool    loading       = false;
-  String? error;
-  String  email         = '';
-  int     resendSeconds = 0;
-  Timer?  _resendTimer;
+  OtpStep step = OtpStep.email;
 
-  Future<void> sendOtp(String rawEmail) async {
-    final e = rawEmail.trim().toLowerCase();
-    if (!_isValidEmail(e)) {
-      error = 'Please enter a valid email address';
-      notifyListeners();
+  bool loading = false;
+  String? error;
+  String email = '';
+  int resendSeconds = 0;
+
+  Timer? _timer;
+
+  Future<void> sendOtp(String input) async {
+    final e = input.trim().toLowerCase();
+
+    if (!_validEmail(e)) {
+      _setError('Enter a valid email');
       return;
     }
-    loading = true; error = null;
-    notifyListeners();
-    final err = await authService.sendOtp(e);
-    loading = false;
-    if (err != null) { error = err; notifyListeners(); return; }
-    email = e;
-    step  = OtpStep.enterCode;
-    _startResendTimer();
-    notifyListeners();
+
+    await _run(() async {
+      final err = await authService.sendOtp(e);
+      if (err != null) return _setError(err);
+
+      email = e;
+      step = OtpStep.code;
+      _startTimer();
+    });
   }
 
   Future<bool> verifyOtp(String code) async {
     if (code.length != 6) {
-      error = 'Please enter the full 6-digit code';
-      notifyListeners();
+      _setError('Enter full 6-digit code');
       return false;
     }
-    loading = true; error = null;
-    notifyListeners();
-    final err = await authService.verifyOtp(email, code);
-    loading = false;
-    if (err != null) { error = err; notifyListeners(); return false; }
-    notifyListeners();
-    return true;
+
+    bool success = false;
+
+    await _run(() async {
+      final err = await authService.verifyOtp(email, code);
+      if (err != null) return _setError(err);
+      success = true;
+    });
+
+    return success;
   }
 
   Future<void> resend() async {
     if (resendSeconds > 0) return;
-    loading = true; error = null;
-    notifyListeners();
-    await authService.sendOtp(email);
-    loading = false;
-    _startResendTimer();
-    notifyListeners();
-  }
 
-  void changeEmail() { step = OtpStep.enterEmail; error = null; notifyListeners(); }
-
-  void _startResendTimer() {
-    _resendTimer?.cancel();
-    resendSeconds = 60;
-    notifyListeners();
-    _resendTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-      resendSeconds--;
-      notifyListeners();
-      if (resendSeconds <= 0) t.cancel();
+    await _run(() async {
+      await authService.sendOtp(email);
+      _startTimer();
     });
   }
 
-  bool _isValidEmail(String e) => RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(e);
+  void changeEmail() {
+    step = OtpStep.email;
+    error = null;
+    notifyListeners();
+  }
+
+  /* ---------------- Helpers ---------------- */
+
+  Future<void> _run(Future<void> Function() task) async {
+    loading = true;
+    error = null;
+    notifyListeners();
+
+    await task();
+
+    loading = false;
+    notifyListeners();
+  }
+
+  void _setError(String msg) {
+    error = msg;
+    notifyListeners();
+  }
+
+  void _startTimer() {
+    _timer?.cancel();
+    resendSeconds = 60;
+    notifyListeners();
+
+    _timer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (--resendSeconds <= 0) t.cancel();
+      notifyListeners();
+    });
+  }
+
+  bool _validEmail(String e) =>
+      RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(e);
 
   @override
-  void dispose() { _resendTimer?.cancel(); super.dispose(); }
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -129,18 +158,26 @@ class _AuthViewState extends State<_AuthView> {
   }
 
   Future<void> _submitEmail() async {
-    await context.read<AuthProvider>().sendOtp(_emailCtrl.text);
-    if (mounted && context.read<AuthProvider>().step == OtpStep.enterCode) {
-      Future.delayed(const Duration(milliseconds: 400), () {
-        if (mounted) _otpFocus[0].requestFocus();
+    final auth = context.read<AuthProvider>();
+
+    await auth.sendOtp(_emailCtrl.text);
+
+    if (!mounted) return;
+
+    if (auth.step == OtpStep.code) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _otpFocus.first.requestFocus();
       });
     }
   }
 
   Future<void> _submitOtp() async {
     final code = _otpCtrls.map((c) => c.text).join();
-    final ok   = await context.read<AuthProvider>().verifyOtp(code);
-    if (ok && mounted) await _navigateAfterAuth();
+    final ok = await context.read<AuthProvider>().verifyOtp(code);
+
+    if (ok && mounted) {
+      Navigator.of(context).pop();
+    }
   }
 
   // ✅ KEY FIX: Navigate based on SharedPreferences flag ONLY
@@ -195,39 +232,49 @@ class _AuthViewState extends State<_AuthView> {
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
-    final size = MediaQuery.of(context).size;
 
     return Scaffold(
       backgroundColor: kBlack,
       body: SafeArea(
         child: GestureDetector(
-          onTap: () => FocusScope.of(context).unfocus(),
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: SizedBox(
-              height: size.height - MediaQuery.of(context).padding.top - 20,
-              child: Column(
-                children: [
-                  const SizedBox(height: 48),
-                  _buildLogo(),
-                  const SizedBox(height: 48),
-                  Expanded(
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 350),
-                      transitionBuilder: (child, anim) => SlideTransition(
-                        position: Tween<Offset>(
-                          begin: const Offset(0.15, 0), end: Offset.zero,
-                        ).animate(anim),
-                        child: FadeTransition(opacity: anim, child: child),
-                      ),
-                      child: auth.step == OtpStep.enterEmail
-                          ? _buildEmailStep(auth)
-                          : _buildOtpStep(auth),
-                    ),
+          onTap: FocusScope.of(context).unfocus,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minHeight: constraints.maxHeight,
                   ),
-                ],
-              ),
-            ),
+                  child: Column(
+                    children: [
+                      const SizedBox(height: 48),
+                      _buildLogo(),
+                      const SizedBox(height: 48),
+                      Expanded(
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 300),
+                          transitionBuilder: (child, anim) =>
+                              SlideTransition(
+                                position: Tween(
+                                  begin: const Offset(0.1, 0),
+                                  end: Offset.zero,
+                                ).animate(anim),
+                                child: FadeTransition(
+                                  opacity: anim,
+                                  child: child,
+                                ),
+                              ),
+                          child: auth.step == OtpStep.email
+                              ? _buildEmailStep(auth)
+                              : _buildOtpStep(auth),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ),
@@ -344,27 +391,31 @@ class _AuthViewState extends State<_AuthView> {
 
   Widget _otpBox(int index) => SizedBox(
     width: 46, height: 56,
-    child: RawKeyboardListener(
-      focusNode: FocusNode(),
-      onKey: (e) => _onOtpKeyDown(index, e),
-      child: TextFormField(
-        controller: _otpCtrls[index],
-        focusNode: _otpFocus[index],
-        keyboardType: TextInputType.number,
-        textAlign: TextAlign.center,
-        maxLength: 1,
-        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-        style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700),
-        decoration: InputDecoration(
-          counterText: '',
-          filled: true,
-          fillColor: kSurface,
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF222222), width: 1.5)),
-          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: kLime, width: 2)),
-        ),
-        onChanged: (v) => _onOtpChanged(index, v),
+    child: TextFormField(
+      controller: _otpCtrls[index],
+      focusNode: _otpFocus[index],
+      keyboardType: TextInputType.number,
+      textAlign: TextAlign.center,
+      maxLength: 1,
+      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700),
+      decoration: InputDecoration(
+        counterText: '',
+        filled: true,
+        fillColor: kSurface,
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF222222), width: 1.5)),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: kLime, width: 2)),
       ),
+        onChanged: (v) {
+          if (v.isNotEmpty && index < 5) {
+            _otpFocus[index + 1].requestFocus();
+          } else if (v.isEmpty && index > 0) {
+            _otpFocus[index - 1].requestFocus();
+          } else if (index == 5) {
+            _submitOtp();
+          }
+        }
     ),
   );
 
