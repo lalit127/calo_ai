@@ -32,7 +32,6 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    // Init data on first load
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppProvider>().init();
     });
