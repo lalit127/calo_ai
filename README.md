@@ -400,6 +400,10 @@ git push origin feature/your-feature
 
 ---
 
+## Error Handling
+
+This project now includes improved error handling for AI responses.
+
 ## 📄 License
 
 Feel Free to Use 😂
